@@ -90,6 +90,7 @@
 
 // DX Sample
 #include "StepTimer.h"
+#include "DeviceResources.h"
 
 // #. 예외 처리 클래스
 namespace DX
