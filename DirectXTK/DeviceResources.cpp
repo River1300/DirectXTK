@@ -396,13 +396,77 @@ void DeviceResources::CreateWindowSizeDependentResources()  // 윈도우 크기에 따�
 }
 void DeviceResources::SetWindow(HWND window, int width, int height) noexcept
 {
+    m_window = window;
+
+    m_outputSize.left = m_outputSize.top = 0;
+    m_outputSize.right = width;
+    m_outputSize.bottom = height;   // 윈도우가 생성되었을 때 호출되어 윈도우 핸들과 출력 사이즈를 갱신
 }
 bool DeviceResources::WindowSizeChanged(int width, int height)
 {
-    return false;
+    RECT newRc;
+    newRc.left = newRc.top = 0;
+    newRc.right = width;
+    newRc.bottom = height;
+
+    if (newRc == m_outputSize)  // 만약 기존 출력 영역과 같은 크기일 경우
+    {
+        UpdateColorSpace(); // HDR 미지원 모니터에서 HDR 지원 모니터로 옮겨 졌을 수도 있으므로 색상공간을 갱신
+
+        return false;
+    }
+
+    m_outputSize = newRc;   // 크기가 변경되었을 경우
+    CreateWindowSizeDependentResources();
+    return true;
 }
 void DeviceResources::HandleDeviceLost()
 {
+// #. 디바이스가 손상되었을 경우
+//  1. m_deviceNotify->OnDeviceLost() 전달
+//  2. 디바이스 종속 리소스 리셋
+//      => 깊이 스텐실 뷰 & 버퍼
+//      => 렌더타겟 뷰 & 버퍼
+//      => 스왑체인
+//      => 디바이스 컨텍스트
+//      => 디바이스
+//      => DXGI 팩토리
+//  3. 디바이스 종속 리소스 생성
+//  4. 윈도우 사이즈 종속 리소스 생성
+//  5. m_deviceNotify->OnDeviceRestored() 전달
+    if (m_deviceNotify)
+    {
+        m_deviceNotify->OnDeviceLost();
+    }
+
+    m_d3dDepthStencilView.Reset();
+    m_d3dRenderTargetView.Reset();
+    m_renderTarget.Reset();
+    m_depthStencil.Reset();
+    m_swapChain.Reset();
+    m_d3dContext.Reset();
+    m_d3dAnnotation.Reset();
+
+#ifdef _DEBUG
+    {
+        ComPtr<ID3D11Debug> d3dDebug;
+        if (SUCCEEDED(m_d3dDevice.As(&d3dDebug)))
+        {
+            d3dDebug->ReportLiveDeviceObjects(D3D11_RLDO_SUMMARY);
+        }   // 손상된 디바이스를 다시 생성하기 전에 현재까지의 디바이스 작동시간에 대한 정보를 먼저 보고한 후, 새로 생성
+    }
+#endif
+
+    m_d3dDevice.Reset();
+    m_dxgiFactory.Reset();
+
+    CreateDeviceResources();
+    CreateWindowSizeDependentResources();
+
+    if (m_deviceNotify)
+    {
+        m_deviceNotify->OnDeivecRestored();
+    }
 }
 void DeviceResources::CreateFactory()
 {
