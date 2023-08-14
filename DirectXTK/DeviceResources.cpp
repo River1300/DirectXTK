@@ -71,10 +71,11 @@ void DeviceResources::CreateDeviceResources()   // 사용자 컴퓨터 환경을 체크하여
 {
     UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;  // 사용자의 그래픽카드가 BGRA 포멧 형식이 지원되는지 확인
 
+// #1. 디버그 체크
 #if defined(_DEBUG)
     if (SdkLayerAvailable())
     {
-        creationFlags != D3D11_CREATE_DEVICE_DEBUG;
+        creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
     }
     else
     {
@@ -84,6 +85,7 @@ void DeviceResources::CreateDeviceResources()   // 사용자 컴퓨터 환경을 체크하여
 
     CreateFactory();
 
+// #2. 옵션에 따라 기능 지원 여부를 체크
     if (m_options & c_AllowTearing)
     {
         BOOL allowTearing = FALSE;  // 테어링 지원 여부
@@ -179,6 +181,7 @@ void DeviceResources::CreateDeviceResources()   // 사용자 컴퓨터 환경을 체크하여
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
 
+// #3. 디바이스 생성
     HRESULT hr = E_FAIL;
     if (adapter)
     {
@@ -201,6 +204,7 @@ void DeviceResources::CreateDeviceResources()   // 사용자 컴퓨터 환경을 체크하여
         throw std::exception("No Direct3D hardware device found");
     }
 #else
+// #4. 그래픽 카드가 없다면 WARP을 사용하여 디바이스 생성
     if (FAILED(hr)) // 그래픽 카드를 만드는 과정이 싪패 했을 경우 새롭게 그래픽 카드를 만든다.
     {
         hr = D3D11CreateDevice(
@@ -251,8 +255,144 @@ void DeviceResources::CreateDeviceResources()   // 사용자 컴퓨터 환경을 체크하여
     ThrowIfFailed(context.As(&m_d3dAnnotation));
 
 }
-void DeviceResources::CreateWindowSizeDependentResources()
+void DeviceResources::CreateWindowSizeDependentResources()  // 윈도우 크기에 따라 다시 생성해야 하는 디바이스 리소스들을 분리
 {
+    if (!m_window)  // 윈도우 핸들을 담고 있는 멤버 함수가 정상인지 확인하고 비정상이면 throw
+    {
+        throw std::exception("Call SetWindow with a valid Win32 window handle");
+    }
+
+    // 디바이스 리소스의 사이즈를 변경하기 위해 기존의 디바이스 리소스들(렌더타겟, 깊이 스텐실 버퍼 및 뷰)을 리셋
+    ID3D11RenderTargetView* nullView[] = { nullptr };
+    m_d3dContext->OMSetRenderTargets(_countof(nullView), nullView, nullptr);
+    m_d3dRenderTargetView.Reset();
+    m_d3dDepthStencilView.Reset();
+    m_depthStencil.Reset();
+    m_d3dContext->Flush();
+
+    const UINT backBufferWidth = std::max<UINT>(
+        static_cast<UINT>(m_outputSize.right - m_outputSize.left),
+        1u  // 1보다 작아질리가 없다, 1 이하의 값이 들어오는 것을 맊기 위한 키워드
+        );
+    const UINT backBufferHeight = std::max<UINT>(
+        static_cast<UINT>(m_outputSize.bottom - m_outputSize.top),
+        1u
+        );
+// 각각의 플래그는 비트 별로 구분, 오든 비트 플래그를 OR 연산을 하여 0b0111이 됨, m_options & 0b0111에서 0이 아닌 경우를 제외하면 m_options값이 그대로 계산 결과 값이 됨
+//      => 3가지 옵션 중 한 개라도 켜져 있다면 NoSRGB()를 통해 포멧을 UNORM 형태로 변경하고, 하나도 설정되어 있지 않으면 포멧을 그대로 유지
+    const DXGI_FORMAT backBufferFormat =
+        (m_options & (c_FlipPresent | c_AllowTearing | c_EnableHDR)) ?
+        NoSRGB(m_backBufferFormat) : m_backBufferFormat;
+
+    if (m_swapChain)    // 스왑체인이 존재하는지 확인하고 처음이면 생성, 아니면 사이즈 변경
+    {
+        HRESULT hr = m_swapChain->ResizeBuffers(
+            m_backBufferCount,
+            backBufferWidth,
+            backBufferHeight,
+            backBufferFormat,
+            (m_options & c_AllowTearing) ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u
+        );  //  => 테어링 플래그 확인
+
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        {
+#ifdef _DEBUG
+            char buff[64] = {};
+            sprintf_s(buff, "Device Lost on ResizeBuffers: Reason code 0x%08X\n",
+                static_cast<unsigned int>((hr == DXGI_ERROR_DEVICE_REMOVED) ?
+                    m_d3dDevice->GetDeviceRemovedReason() : hr));
+            OutputDebugStringA(buff);
+#endif // _DEBUG
+            HandleDeviceLost();
+
+            return;
+        }
+        else
+        {
+            ThrowIfFailed(hr);
+        }
+    }
+    else
+    {
+        DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+        swapChainDesc.Width = backBufferWidth;
+        swapChainDesc.Height = backBufferHeight;
+        swapChainDesc.Format = backBufferFormat;
+        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swapChainDesc.BufferCount = m_backBufferCount;
+        swapChainDesc.SampleDesc.Count = 1;
+        swapChainDesc.SampleDesc.Quality = 0;
+        swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+        swapChainDesc.SwapEffect =
+            (m_options & (c_FlipPresent | c_AllowTearing | c_EnableHDR)) ?
+            DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
+        swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        swapChainDesc.Flags =
+            (m_options & c_AllowTearing) ?
+            DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+
+        DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsSwapChainDesc = {};
+        fsSwapChainDesc.Windowed = TRUE;
+
+        ThrowIfFailed(m_dxgiFactory->CreateSwapChainForHwnd(
+            m_d3dDevice.Get(),
+            m_window,
+            &swapChainDesc,
+            &fsSwapChainDesc,
+            nullptr, // 기본 모니터 제공
+            m_swapChain.ReleaseAndGetAddressOf()
+        )); // 사용자가 듀얼 모니터를 사용 할 때 GPU는 두 개의 모니터에 각각 Buffer를 통해 그림을 그린다.
+        //      => 이로 인하여 성능의 저하가 발생할 수 있는데, 사용자가 GPU를 모니터 수에 맞추어 각각 적용한다면 성능의 저하가 발생하지 않는다.
+
+        ThrowIfFailed(m_dxgiFactory->MakeWindowAssociation(
+            m_window, DXGI_MWA_NO_ALT_ENTER
+        )); // 전체화면 단축키 ALT + Enter( 독점 모드 )를 막는다.
+
+        UpdateColorSpace();
+
+        ThrowIfFailed(
+            m_swapChain->GetBuffer(
+                0, IID_PPV_ARGS(m_renderTarget.ReleaseAndGetAddressOf())
+            )
+        );
+
+        CD3D11_RENDER_TARGET_VIEW_DESC renderTargetViewDesc(
+            D3D11_RTV_DIMENSION_TEXTURE2D, m_backBufferFormat
+        );
+
+        ThrowIfFailed(
+            m_d3dDevice->CreateRenderTargetView
+            (
+                m_renderTarget.Get(),
+                &renderTargetViewDesc,
+                m_d3dRenderTargetView.ReleaseAndGetAddressOf()
+            )
+        );
+
+        if (m_depthBufferFormat != DXGI_FORMAT_UNKNOWN)
+        {
+            CD3D11_TEXTURE2D_DESC depthStencilDesc(
+                m_depthBufferFormat,
+                backBufferWidth,
+                backBufferHeight,
+                1,
+                1,
+                D3D11_BIND_DEPTH_STENCIL
+            );
+            ThrowIfFailed(m_d3dDevice->CreateTexture2D(
+                &depthStencilDesc,
+                nullptr,
+                m_depthStencil.ReleaseAndGetAddressOf()
+            ));
+        }
+
+        m_screenViewport = CD3D11_VIEWPORT(
+            0.0f,
+            0.0f,
+            static_cast<float>(backBufferWidth),
+            static_cast<float>(backBufferHeight)
+        );
+    }
 }
 void DeviceResources::SetWindow(HWND window, int width, int height) noexcept
 {
