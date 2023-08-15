@@ -468,8 +468,94 @@ void DeviceResources::HandleDeviceLost()
         m_deviceNotify->OnDeivecRestored();
     }
 }
+
+void DX::DeviceResources::Present() // 화면에 표시
+{
+    HRESULT hr = E_FAIL;
+    if (m_options & c_AllowTearing)
+    {
+        hr = m_swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
+    }
+    else
+    {
+        hr = m_swapChain->Present(1, 0);
+    }
+
+    m_d3dContext->DiscardView(m_d3dRenderTargetView.Get());
+
+    if (m_d3dDepthStencilView)
+    {
+        m_d3dContext->DiscardView(m_d3dDepthStencilView.Get());
+    }
+
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+    {
+#ifdef _DEBUG
+        char buff[64] = {};
+        sprintf_s(buff, "Device Lost on Present: Reason code 0x%08X\n",
+            static_cast<unsigned int>(
+                (hr==DXGI_ERROR_DEVICE_REMOVED) ?
+                m_d3dDevice->GetDeviceRemovedReason() : hr)
+        );
+        OutputDebugStringA(buff);   // 디바이스가 손상되면 디버그 모드에서만 출력창에 메시지를 출력
+#endif
+        HandleDeviceLost(); // 디바이스 손상에 대응
+    }
+    else
+    {
+        ThrowIfFailed(hr);
+
+        if (!m_dxgiFactory->IsCurrent())    // Cache : 자주 쓰는 데이터를 미리 올려놓고 그곳에서 로딩을 빠르게 진행
+        {   // 다이렉트X가 Cache 를 관리
+            CreateFactory();
+        }
+    }
+}
+
 void DeviceResources::CreateFactory()
 {
+#if defined(_DEBUG) && (_WIN32_WINNT >= 0x0603) // 디버그 모드이고 운영체제가 Windows 8.1 이상이면
+    bool debugDXGI = false;
+    {
+        ComPtr<IDXGIInfoQueue> dxgiInfoQueue;
+
+        // 디버그용 인터페이스가 존재할 경우 CreateDXGIFactory2() 생성 -> 디버그 중단점 지정 -> 디버그 메시지 필터링
+        if (SUCCEEDED(DXGIGetDebugInterface1(
+            0, IID_PPV_ARGS(dxgiInfoQueue.GetAddressOf())
+        )))
+        {
+            debugDXGI = true;
+
+            ThrowIfFailed(CreateDXGIFactory2(
+                DXGI_CREATE_FACTORY_DEBUG,
+                IID_PPV_ARGS(m_dxgiFactory.ReleaseAndGetAddressOf())
+            ));
+
+            dxgiInfoQueue->SetBreakOnSeverity(
+                DXGI_DEBUG_ALL,
+                DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR,
+                true
+            );
+            dxgiInfoQueue->SetBreakOnSeverity(
+                DXGI_DEBUG_ALL,
+                DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION,
+                true
+            );
+
+            DXGI_INFO_QUEUE_MESSAGE_ID hide[] = { 80 }; // SwapChin - GetContainingQutput() : 현재 윈도우가 포함되어 있는 윈도우를 찾아오는 함수
+            DXGI_INFO_QUEUE_FILTER filter = {};
+            filter.DenyList.NumIDs = _countof(hide);
+            filter.DenyList.pIDList = hide;
+            dxgiInfoQueue->AddStorageFilterEntries(DXGI_DEBUG_DXGI, &filter);
+        }
+    }
+
+    if (!debugDXGI)
+#endif
+        // 릴리즈 모드이거나 운영체제가 Windows 8.1 미만이면 CreateDXGIFactory1() 생성
+        ThrowIfFailed(CreateDXGIFactory1(
+            IID_PPV_ARGS(m_dxgiFactory.ReleaseAndGetAddressOf())
+        ));
 }
 void DeviceResources::GetHardwareAdapter(IDXGIAdapter1** ppAdapter)
 {
