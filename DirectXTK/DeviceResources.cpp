@@ -630,4 +630,58 @@ void DeviceResources::GetHardwareAdapter(IDXGIAdapter1** ppAdapter)
 }
 void DeviceResources::UpdateColorSpace()
 {
+    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709; // HD TV 표준인 RGB 색상공간으로 지정
+
+    bool isDisplayHDR10 = false;
+
+#if defined(NTDDI_WIN10_RS2)
+    if (m_swapChain)
+    {   // 인터페이스로 출력장치를 가져올 수 있으므로 해당 모니터가 HDR 10을 지원하는지 확인
+        ComPtr<IDXGIOutput> output;
+        if (SUCCEEDED(m_swapChain->GetContainingOutput(output.GetAddressOf())))
+        {
+            ComPtr<IDXGIOutput6> output6;
+
+            if (SUCCEEDED(output.As(&output6))) // 모니터가 IDXGIOutput6 사양을 지원하는 지 확인
+            {
+                DXGI_OUTPUT_DESC1 desc;
+                ThrowIfFailed(output6->GetDesc1(&desc));
+
+                if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)  // HDR10 사양을 지원하는 지 확인
+                {
+                    isDisplayHDR10 = true;
+                }
+            }
+        }
+    }
+#endif
+
+    if ((m_options & c_EnableHDR) && isDisplayHDR10)    // 앱에서 옵션을 선택하고 디스플레이가 HDR10을 지원하면 백버퍼에 맞는 색상 공간을 지정
+    {
+        switch (m_backBufferFormat)
+        {
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            break;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+            break;
+        default:
+            break;
+        }
+    }
+    m_colorSpace = colorSpace;
+
+    ComPtr<IDXGISwapChain3> swapChain3;
+    if (SUCCEEDED(m_swapChain.As(&swapChain3))) // IDXGISwapChain3 인터페이스를 지원하는 지 확인
+    {
+        UINT colorSpaceSupport = 0;
+        if (SUCCEEDED(
+            swapChain3->CheckColorSpaceSupport(colorSpace, &colorSpaceSupport))
+            &&
+            (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+        {
+            ThrowIfFailed(swapChain3->SetColorSpace1(colorSpace));
+        }
+    }
 }
