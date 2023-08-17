@@ -559,6 +559,74 @@ void DeviceResources::CreateFactory()
 }
 void DeviceResources::GetHardwareAdapter(IDXGIAdapter1** ppAdapter)
 {
+    *ppAdapter = nullptr;   // 매개변수로 받은 어댑터를 일단 비워 둔다. ** 형식으로 받았으니 *로 대입
+
+    ComPtr<IDXGIAdapter1> adapter;  // 구해온 그래픽 카드는 adapter 변수에 저장해 두었다가 작업이 종료되면 ppAdapter로 옮긴다.
+
+// #. 유저의 컴퓨터 사양을 체크해서 DXGI 1.6이 사용가능하고 윈도우 10 Red Strone 4(1803)이상이 설치되어 있는지 확인
+#if defined(__dxgi1_6_h__) && defined(NTDDI_WIN10_RS4)
+    // IDXGIFactory6 버전이 지원되는지 확인하고 열거 작업을 실행
+    ComPtr<IDXGIFactory6> factory6;
+    HRESULT hr = m_dxgiFactory.As(&factory6);
+    if (SUCCEEDED(hr))
+    {
+        // adapterIndex의 값으로 반복여부를 정하는 것이 아니라 장치 열거 함수의 리턴 값으로 반복 여부를 결정
+        //      => 장치 순서대로 가져오다가 더 이상 장치가 없으면 for문 끝
+        for (UINT adapterIndex = 0;
+            SUCCEEDED(factory6->EnumAdapterByGpuPreference( // 주어진 GPU 선호도를 기준으로 장치를 열거
+                adapterIndex,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                IID_PPV_ARGS(adapter.ReleaseAndGetAddressOf()))
+            );
+            adapterIndex++)
+        {
+            DXGI_ADAPTER_DESC1 desc;    // 정보를 가저오고
+            ThrowIfFailed(adapter->GetDesc1(&desc));    // 가져온 정보에 소프트웨어 렌더러가 있으면 해당 어댑터를 부시하고 다시 for 문 시작
+
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+
+#ifdef _DEBUG   // 디버그 모드면 열거한 디바이스 정보를 출력창에 표시
+            wchar_t buff[256] = {};
+            swprintf_s(buff, L"Direct3D Adapter (%u): VID:%04X, PID:%04X-%ls\n",
+                adapterIndex,
+                desc.VendorId,
+                desc.DeviceId,
+                desc.Description
+            );
+            OutputDebugStringW(buff);
+#endif
+            break;
+        }
+    }
+#endif
+
+    if (adapter)
+    {
+        for (UINT adapterIndex = 0;
+            SUCCEEDED(m_dxgiFactory->EnumAdapters1(
+                adapterIndex,
+                adapter.ReleaseAndGetAddressOf()
+            ));
+            adapterIndex++)
+        {
+            DXGI_ADAPTER_DESC1 desc;
+            ThrowIfFailed(adapter->GetDesc1(&desc));
+
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+#ifdef _DEBUG
+            wchar_t buff[256] = {};
+            swprintf_s(buff, L"Direct3D Adapter (%u): VID:%04X, PID:%04X-%ls\n",
+                adapterIndex,
+                desc.VendorId,
+                desc.DeviceId,
+                desc.Description
+            );
+            OutputDebugStringW(buff);
+#endif
+            break;
+        }
+    }
+    *ppAdapter = adapter.Detach();
 }
 void DeviceResources::UpdateColorSpace()
 {
