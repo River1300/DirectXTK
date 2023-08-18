@@ -465,7 +465,7 @@ void DeviceResources::HandleDeviceLost()
 
     if (m_deviceNotify)
     {
-        m_deviceNotify->OnDeivecRestored();
+        m_deviceNotify->OnDeviceRestored();
     }
 }
 
