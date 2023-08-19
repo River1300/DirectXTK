@@ -113,6 +113,191 @@ int WINAPI wWinMain(
 	return static_cast<int>(msg.wParam);
 }
 
+LRESULT WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	static bool s_in_sizemove = false;
+	static bool s_in_suspend = false;
+	static bool s_minimized = false;
+	static bool s_fullscreen = false;	// 윈도우의 상태를 추적하기 위한 정적 플래그들
+
+	// 윈도우에서 사용자 데이터를 가져와 Game 인스턴스로 변환
+	auto game = reinterpret_cast<Game*>(GetWindowLongPtr(hWnd, GWLP_USERDATA));
+
+	switch (message)
+	{
+	case WM_CLOSE:
+		DestroyWindow(hWnd);
+		break;
+
+	case WM_PAINT:
+		if (s_in_sizemove && game)
+		{
+			game->Tick();
+		}
+		else
+		{
+			PAINTSTRUCT ps;
+			(void)BeginPaint(hWnd, &ps);
+			EndPaint(hWnd, &ps);
+		}
+		break;
+
+	case WM_MOVE:
+		if (game)
+		{
+			game->OnWindowMoved();
+		}
+		break;
+
+	case WM_SIZE:
+		if (wParam == SIZE_MINIMIZED)	// 최소화 메세지를 받았을 때
+		{
+			if (!s_minimized)	// 최소화 되지 않은 상태라면
+			{
+				s_minimized = true;	// 최소화 플래그
+				if (!s_in_suspend && game) game->OnSuspending();
+				s_in_suspend = true;	// 일시 정지 플래그
+			}
+		}
+		else if (s_minimized)	// 최소화 메시지가 아니고 이미 최소화 되어 있으면
+		{
+			s_minimized = false;	// 최소화 플래그
+			if (s_in_suspend && game) game->OnResuming();
+			s_in_suspend = false;	// 일시 정지 플래그
+		}
+		else if (!s_in_sizemove && game)	// 사이즈 변경 중이 아닐 때
+		{
+			game->OnWindowSizeChanged(LOWORD(lParam), HIWORD(lParam));
+		}
+		break;
+
+	case WM_ENTERSIZEMOVE:
+		s_in_sizemove = true;
+		break;
+
+	case WM_EXITSIZEMOVE:
+		s_in_sizemove = false;
+		if (game)
+		{
+			RECT rc;
+			GetClientRect(hWnd, &rc);
+
+			game->OnWindowSizeChanged(rc.right - rc.left, rc.bottom - rc.top);
+		}
+		break;
+
+	case WM_GETMINMAXINFO:
+		if (lParam)
+		{
+			auto info = reinterpret_cast<MINMAXINFO*>(lParam);
+			info->ptMinTrackSize.x = 320;
+			info->ptMinTrackSize.y = 200;
+		}
+		break;
+
+	case WM_ACTIVATEAPP:
+		if (game)
+		{
+			if (wParam)
+			{
+				game->OnActivated();
+			}
+			else
+			{
+				game->OnDeactivated();
+			}
+		}
+		break;
+
+	case WM_POWERBROADCAST:
+		switch (wParam)
+		{
+		case PBT_APMQUERYSUSPEND:	// 절전모드로 들어감에 대한 알림
+			if (!s_in_suspend && game) game->OnSuspending();
+			s_in_suspend = true;
+			return TRUE;
+
+		case PBT_APMRESUMESUSPEND:	// 절전모드에서 재개됨에 대한 알림
+			if (!s_minimized)
+			{
+				if (s_in_suspend && game) game->OnResuming();
+				s_in_suspend = false;
+			}
+			return TRUE;
+		}
+		break;
+
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		break;
+
+	case WM_INPUT:
+	case WM_MOUSEMOVE:
+	case WM_LBUTTONDOWN:
+	case WM_LBUTTONUP:
+	case WM_RBUTTONDOWN:
+	case WM_RBUTTONUP:
+	case WM_MBUTTONDOWN:
+	case WM_MBUTTONUP:
+	case WM_MOUSEWHEEL:
+	case WM_XBUTTONDOWN:
+	case WM_XBUTTONUP:
+	case WM_MOUSEHOVER:
+		Mouse::ProcessMessage(message, wParam, lParam);
+		break;
+
+	case WM_KEYDOWN:
+	case WM_KEYUP:
+	case WM_SYSKEYUP:
+		Keyboard::ProcessMessage(message, wParam, lParam);
+		break;
+
+	case WM_SYSKEYDOWN:
+		if (wParam == VK_RETURN && (lParam & 0x60000000) == 0x20000000)	// ALT + ENTER
+		{
+			if (s_fullscreen)	// 현재 상태가 전체화면
+			{
+				SetWindowLongPtr(hWnd, GWL_STYLE, WS_OVERLAPPEDWINDOW);
+				SetWindowLongPtr(hWnd, GWL_EXSTYLE, 0);	// 돌아올 창모드의 윈도우 스타일 지정
+
+				int width = 800;
+				int height = 600;
+				if (game) game->GetDefaultSize(width, height);	// 기본 위도우 크기를 가져오고
+
+				ShowWindow(hWnd, SW_SHOWNORMAL);
+
+				SetWindowPos(	// 윈도우 위치 지정
+					hWnd,
+					HWND_TOP,
+					0, 0, width, height,
+					SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
+				);
+			}
+			else	// 윈도우 상태이면
+			{
+				SetWindowLongPtr(hWnd, GWL_STYLE, 0);
+				SetWindowLongPtr(hWnd, GWL_EXSTYLE, WS_EX_TOPMOST);	// 전체화면용 윈도우 스타일 지정
+
+				SetWindowPos(	// 윈도우 위치 지정
+					hWnd,
+					HWND_TOP,
+					0, 0, 0, 0,
+					SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+				ShowWindow(hWnd, SW_SHOWMAXIMIZED);	// 최대화
+			}
+			s_fullscreen = !s_fullscreen;
+		}
+		Keyboard::ProcessMessage(message, wParam, lParam);
+		break;
+
+	case WM_MENUCHAR:
+		return MAKELRESULT(0, MNC_CLOSE);
+	}
+
+	return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
 void ExitGame() noexcept
 {
 	PostQuitMessage(0);
