@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "Game.h"
 
+#include <iomanip>
+#include <sstream>
+
 extern void ExitGame() noexcept;
 //		=> 외부에 존재하는 ExitGame() 함수에 대한 extern 선언
 //		=> 운영체제 별로 서로 다른 종료 스타일이기 때문에 Game 클래스 외부에 종료 함수를 만든다.
@@ -53,6 +56,14 @@ void Game::Update(DX::StepTimer const& timer)	// 게임 로직을 업데이트 하는 함수
 	{
 		ExitGame();
 	}
+	// 다음 애니메이션 프레임 처리
+	m_timeToNextFrame -= timer.GetElapsedSeconds();	// 남은 시간에서 경과시간(델타)를 뺀다.
+	if (m_timeToNextFrame < 0.f)
+	{
+		m_timeToNextFrame = 0.1f;	// 다음 시간을 0.1초로 지정하고
+		m_currentFrame = (m_currentFrame + 1) %	// 애니메이션 프레임을 순환형으로 증가 0 ~ 9, 0 ~ 9 ...
+			static_cast<int>(m_textures.size());
+	}
 }
 #pragma endregion
 
@@ -65,6 +76,15 @@ void Game::Render()
 	Clear();
 
 	m_deviceResources->PIXBeginEvent(L"Render");
+
+	m_spriteBatch->Begin(
+		SpriteSortMode_Deferred, m_commonStates->NonPremultiplied()
+	);
+	m_spriteBatch->Draw(
+		m_textures[m_currentFrame].Get(),
+		XMFLOAT2(0, 0)
+	);
+	m_spriteBatch->End();
 
 	m_deviceResources->PIXEndEvent();
 
@@ -127,7 +147,26 @@ void Game::GetDefaultSize(int& width, int& height) const noexcept
 #pragma region Direct3D Resources
 void Game::CreateDeviceDependentResources()
 {
+	auto device = m_deviceResources->GetD3DDevice();
+	auto context = m_deviceResources->GetD3DDeviceContext();
+
+	m_spriteBatch = std::make_unique<DirectX::SpriteBatch>(context);
+
 	// 텍스쳐, 버텍스 등 디바이스 종속 리소스를 생성
+	std::wstringstream fileName;
+	for (int i = 0; i < 10; i++)
+	{
+		fileName.str(L"");
+		fileName << L"Assets/die" << std::setfill(L'0') << std::setw(2) << i + 1 << ".png";	// 파일 명 생성
+		DX::ThrowIfFailed(
+			CreateWICTextureFromFile(	// WIC 를 사용하여 파일에서 텍스쳐를 생성
+				device,
+				fileName.str().c_str(),
+				nullptr,
+				m_textures[i].ReleaseAndGetAddressOf()
+			)
+		);
+	}
 }
 void Game::CreateWindowSizeDependentResources()
 {
@@ -135,7 +174,10 @@ void Game::CreateWindowSizeDependentResources()
 }
 void Game::OnDeviceLost()
 {
-	// 디바이스가 손실 되었을 때의 처리
+	for (auto tex : m_textures) tex.Reset();
+
+	m_spriteBatch.reset();
+	m_commonStates.reset();
 }
 void Game::OnDeviceRestored()	// 디바이스가 복구 되었을 때의 처리
 {
